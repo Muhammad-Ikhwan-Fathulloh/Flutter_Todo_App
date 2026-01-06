@@ -1,1137 +1,722 @@
-## 1. **Setup Dependencies**
+## 📱 **DEPLOY APK (Android Application Package)**
 
-Tambahkan ke `pubspec.yaml`:
+### **Langkah 1: Persiapan di VS Code**
 
-```yaml
-dependencies:
-  flutter:
-    sdk: flutter
-  uploadthing: ^1.0.0  # atau paket yang sesuai untuk UploadThing
-  sqflite: ^2.3.0
-  path: ^1.8.3
-  http: ^0.13.5
-  provider: ^6.0.5
-  file_picker: ^5.3.3
-  cached_network_image: ^3.3.0
+1. **Buka terminal di VS Code** (`Ctrl + `` `)
+2. **Periksa environment Flutter**:
+```bash
+flutter doctor
+```
+Pastikan semua checklist hijau, terutama:
+- Flutter SDK ✓
+- Android toolchain ✓
+- Android Studio ✓
+- Android device/emulator ✓
+
+3. **Update dependencies**:
+```bash
+flutter pub get
 ```
 
-## 2. **Model Data**
+### **Langkah 2: Konfigurasi Android**
 
-```dart
-// lib/models/file_model.dart
-class HybridFile {
-  int? id;
-  String localPath;
-  String? cloudUrl;
-  String fileName;
-  DateTime uploadedAt;
-  bool isSynced;
-  FileType type;
+4. **Edit `android/app/build.gradle`**:
 
-  HybridFile({
-    this.id,
-    required this.localPath,
-    this.cloudUrl,
-    required this.fileName,
-    required this.uploadedAt,
-    this.isSynced = false,
-    required this.type,
-  });
+```gradle
+android {
+    namespace "com.example.yourapp"
+    compileSdk 34  // Update ke versi terbaru
 
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'localPath': localPath,
-      'cloudUrl': cloudUrl,
-      'fileName': fileName,
-      'uploadedAt': uploadedAt.toIso8601String(),
-      'isSynced': isSynced ? 1 : 0,
-      'type': type.toString(),
-    };
-  }
-
-  factory HybridFile.fromMap(Map<String, dynamic> map) {
-    return HybridFile(
-      id: map['id'],
-      localPath: map['localPath'],
-      cloudUrl: map['cloudUrl'],
-      fileName: map['fileName'],
-      uploadedAt: DateTime.parse(map['uploadedAt']),
-      isSynced: map['isSynced'] == 1,
-      type: FileType.values.firstWhere(
-        (e) => e.toString() == map['type'],
-        orElse: () => FileType.other,
-      ),
-    );
-  }
-}
-
-enum FileType { image, video, document, pdf, other }
-```
-
-## 3. **Database Helper (SQLite)**
-
-```dart
-// lib/database/database_helper.dart
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
-import '../models/file_model.dart';
-
-class DatabaseHelper {
-  static final DatabaseHelper _instance = DatabaseHelper._internal();
-  factory DatabaseHelper() => _instance;
-  DatabaseHelper._internal();
-
-  static Database? _database;
-
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
-  }
-
-  Future<Database> _initDatabase() async {
-    String path = join(await getDatabasesPath(), 'hybrid_storage.db');
-    return await openDatabase(
-      path,
-      version: 1,
-      onCreate: _onCreate,
-    );
-  }
-
-  Future<void> _onCreate(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE files(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        localPath TEXT NOT NULL,
-        cloudUrl TEXT,
-        fileName TEXT NOT NULL,
-        uploadedAt TEXT NOT NULL,
-        isSynced INTEGER DEFAULT 0,
-        type TEXT NOT NULL
-      )
-    ''');
-  }
-
-  // CRUD Operations
-  Future<int> insertFile(HybridFile file) async {
-    Database db = await database;
-    return await db.insert('files', file.toMap());
-  }
-
-  Future<List<HybridFile>> getAllFiles() async {
-    Database db = await database;
-    final List<Map<String, dynamic>> maps = await db.query('files');
-    return List.generate(maps.length, (i) => HybridFile.fromMap(maps[i]));
-  }
-
-  Future<List<HybridFile>> getUnsyncedFiles() async {
-    Database db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'files',
-      where: 'isSynced = ?',
-      whereArgs: [0],
-    );
-    return List.generate(maps.length, (i) => HybridFile.fromMap(maps[i]));
-  }
-
-  Future<int> updateFile(HybridFile file) async {
-    Database db = await database;
-    return await db.update(
-      'files',
-      file.toMap(),
-      where: 'id = ?',
-      whereArgs: [file.id],
-    );
-  }
-
-  Future<int> deleteFile(int id) async {
-    Database db = await database;
-    return await db.delete(
-      'files',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-}
-```
-
-## 4. **UploadThing Service**
-
-```dart
-// lib/services/uploadthing_service.dart
-import 'dart:io';
-import 'package:http/http.dart' as http;
-import 'package:flutter_dotenv/flutter_dotenv.dart';
-import '../models/file_model.dart';
-
-class UploadThingService {
-  static final String? _apiKey = dotenv.env['UPLOADTHING_SECRET'];
-  static const String _apiUrl = 'https://uploadthing.com/api';
-
-  Future<String?> uploadFile(File file, String fileName) async {
-    try {
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$_apiUrl/upload'),
-      );
-
-      request.headers['Authorization'] = 'Bearer $_apiKey';
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          'file',
-          file.path,
-          filename: fileName,
-        ),
-      );
-
-      var response = await request.send();
-      
-      if (response.statusCode == 200) {
-        var responseData = await response.stream.bytesToString();
-        // Parse response to get URL
-        // Format response sesuai dengan API UploadThing
-        final jsonResponse = json.decode(responseData);
-        return jsonResponse['url'];
-      }
-      return null;
-    } catch (e) {
-      print('Upload error: $e');
-      return null;
+    defaultConfig {
+        applicationId "com.example.yourapp"  // Ganti dengan package name unik
+        minSdk 21  // Minimum Android 5.0
+        targetSdk 34
+        versionCode 1  // Increment setiap update
+        versionName "1.0.0"
     }
-  }
 
-  Future<bool> deleteFile(String fileUrl) async {
-    try {
-      var response = await http.delete(
-        Uri.parse('$_apiUrl/deleteFile'),
-        headers: {
-          'Authorization': 'Bearer $_apiKey',
-          'Content-Type': 'application/json',
-        },
-        body: json.encode({'url': fileUrl}),
-      );
-      
-      return response.statusCode == 200;
-    } catch (e) {
-      print('Delete error: $e');
-      return false;
-    }
-  }
-}
-```
-
-## 5. **Hybrid Storage Manager**
-
-```dart
-// lib/services/hybrid_storage_manager.dart
-import 'dart:io';
-import 'package:file_picker/file_picker.dart';
-import '../database/database_helper.dart';
-import './uploadthing_service.dart';
-import '../models/file_model.dart';
-
-class HybridStorageManager {
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  final UploadThingService _uploadService = UploadThingService();
-
-  // Upload file dengan hybrid approach
-  Future<HybridFile?> uploadFile(PlatformFile platformFile) async {
-    try {
-      final file = File(platformFile.path!);
-      
-      // Simpan ke lokal database dulu
-      final hybridFile = HybridFile(
-        localPath: platformFile.path!,
-        fileName: platformFile.name,
-        uploadedAt: DateTime.now(),
-        type: _getFileType(platformFile.name),
-      );
-
-      // Insert ke database lokal
-      final id = await _dbHelper.insertFile(hybridFile);
-      hybridFile.id = id;
-
-      // Coba upload ke cloud (UploadThing)
-      final cloudUrl = await _uploadService.uploadFile(file, platformFile.name);
-      
-      if (cloudUrl != null) {
-        // Update database dengan cloud URL
-        hybridFile.cloudUrl = cloudUrl;
-        hybridFile.isSynced = true;
-        await _dbHelper.updateFile(hybridFile);
-      }
-
-      return hybridFile;
-    } catch (e) {
-      print('Upload failed: $e');
-      return null;
-    }
-  }
-
-  // Sync semua file yang belum tersinkron
-  Future<void> syncUnsyncedFiles() async {
-    final unsyncedFiles = await _dbHelper.getUnsyncedFiles();
-    
-    for (var file in unsyncedFiles) {
-      final localFile = File(file.localPath);
-      
-      if (await localFile.exists()) {
-        final cloudUrl = await _uploadService.uploadFile(
-          localFile, 
-          file.fileName
-        );
-        
-        if (cloudUrl != null) {
-          file.cloudUrl = cloudUrl;
-          file.isSynced = true;
-          await _dbHelper.updateFile(file);
+    buildTypes {
+        release {
+            // Tambahkan di dalam release
+            signingConfig signingConfigs.debug  // Untuk testing, ganti nanti
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
-      }
     }
-  }
+}
+```
 
-  // Download file (gunakan cloud jika ada, fallback ke lokal)
-  Future<File?> getFile(HybridFile hybridFile) async {
-    try {
-      // Prioritas: file lokal
-      final localFile = File(hybridFile.localPath);
-      
-      if (await localFile.exists()) {
-        return localFile;
-      }
-      
-      // Jika tidak ada di lokal, download dari cloud
-      if (hybridFile.cloudUrl != null) {
-        // Implement download dari UploadThing
-        // ...
-      }
-      
-      return null;
-    } catch (e) {
-      print('Get file error: $e');
-      return null;
-    }
-  }
+5. **Edit `android/app/src/main/AndroidManifest.xml`**:
 
-  // Delete file dari kedua storage
-  Future<bool> deleteFile(HybridFile hybridFile) async {
-    try {
-      // Hapus dari cloud jika ada
-      if (hybridFile.cloudUrl != null) {
-        await _uploadService.deleteFile(hybridFile.cloudUrl!);
-      }
-      
-      // Hapus dari lokal storage
-      final localFile = File(hybridFile.localPath);
-      if (await localFile.exists()) {
-        await localFile.delete();
-      }
-      
-      // Hapus dari database
-      if (hybridFile.id != null) {
-        await _dbHelper.deleteFile(hybridFile.id!);
-      }
-      
-      return true;
-    } catch (e) {
-      print('Delete error: $e');
-      return false;
-    }
-  }
-
-  FileType _getFileType(String fileName) {
-    final ext = fileName.split('.').last.toLowerCase();
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.CAMERA" /> <!-- Jika pakai kamera -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     
-    if (['jpg', 'jpeg', 'png', 'gif'].contains(ext)) {
-      return FileType.image;
-    } else if (['mp4', 'mov', 'avi'].contains(ext)) {
-      return FileType.video;
-    } else if (['pdf'].contains(ext)) {
-      return FileType.pdf;
-    } else if (['doc', 'docx', 'txt'].contains(ext)) {
-      return FileType.document;
-    } else {
-      return FileType.other;
-    }
-  }
-}
-```
-
-## 6. **Provider State Management**
-
-```dart
-// lib/providers/file_provider.dart
-import 'package:flutter/material.dart';
-import '../models/file_model.dart';
-import '../services/hybrid_storage_manager.dart';
-
-class FileProvider with ChangeNotifier {
-  final HybridStorageManager _storageManager = HybridStorageManager();
-  List<HybridFile> _files = [];
-  bool _isLoading = false;
-
-  List<HybridFile> get files => _files;
-  bool get isLoading => _isLoading;
-
-  Future<void> loadFiles() async {
-    _isLoading = true;
-    notifyListeners();
-
-    _files = await _storageManager._dbHelper.getAllFiles();
-    
-    _isLoading = false;
-    notifyListeners();
-  }
-
-  Future<void> uploadFile(PlatformFile platformFile) async {
-    _isLoading = true;
-    notifyListeners();
-
-    final file = await _storageManager.uploadFile(platformFile);
-    
-    if (file != null) {
-      _files.add(file);
-    }
-
-    _isLoading = false;
-    notifyListeners();
-  }
-
-  Future<void> syncFiles() async {
-    _isLoading = true;
-    notifyListeners();
-
-    await _storageManager.syncUnsyncedFiles();
-    await loadFiles();
-
-    _isLoading = false;
-    notifyListeners();
-  }
-
-  Future<void> deleteFile(HybridFile file) async {
-    await _storageManager.deleteFile(file);
-    _files.remove(file);
-    notifyListeners();
-  }
-}
-```
-
-## 7. **UI Implementation**
-
-```dart
-// lib/screens/home_screen.dart
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:file_picker/file_picker.dart';
-import '../providers/file_provider.dart';
-
-class HomeScreen extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Hybrid Storage'),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.sync),
-            onPressed: () => context.read<FileProvider>().syncFiles(),
-          ),
-        ],
-      ),
-      body: Consumer<FileProvider>(
-        builder: (context, provider, child) {
-          if (provider.isLoading) {
-            return Center(child: CircularProgressIndicator());
-          }
-
-          return ListView.builder(
-            itemCount: provider.files.length,
-            itemBuilder: (context, index) {
-              final file = provider.files[index];
-              return ListTile(
-                leading: _buildFileIcon(file.type),
-                title: Text(file.fileName),
-                subtitle: Text(
-                  file.isSynced ? 'Synced ✓' : 'Local only',
-                  style: TextStyle(
-                    color: file.isSynced ? Colors.green : Colors.orange,
-                  ),
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (file.cloudUrl != null)
-                      IconButton(
-                        icon: Icon(Icons.cloud_download),
-                        onPressed: () {
-                          // Download dari cloud
-                        },
-                      ),
-                    IconButton(
-                      icon: Icon(Icons.delete, color: Colors.red),
-                      onPressed: () => provider.deleteFile(file),
-                    ),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _pickAndUploadFile(context),
-        child: Icon(Icons.upload),
-      ),
-    );
-  }
-
-  Widget _buildFileIcon(FileType type) {
-    switch (type) {
-      case FileType.image:
-        return Icon(Icons.image, color: Colors.blue);
-      case FileType.video:
-        return Icon(Icons.video_library, color: Colors.red);
-      case FileType.pdf:
-        return Icon(Icons.picture_as_pdf, color: Colors.red);
-      case FileType.document:
-        return Icon(Icons.description, color: Colors.green);
-      default:
-        return Icon(Icons.insert_drive_file);
-    }
-  }
-
-  Future<void> _pickAndUploadFile(BuildContext context) async {
-    final result = await FilePicker.platform.pickFiles();
-    
-    if (result != null && result.files.isNotEmpty) {
-      await context.read<FileProvider>().uploadFile(result.files.first);
-    }
-  }
-}
-```
-
-## 8. **Main App**
-
-```dart
-// lib/main.dart
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import './providers/file_provider.dart';
-import './screens/home_screen.dart';
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(MyApp());
-}
-
-class MyApp extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => FileProvider()..loadFiles(),
-      child: MaterialApp(
-        title: 'Hybrid Storage App',
-        theme: ThemeData(
-          primarySwatch: Colors.blue,
-        ),
-        home: HomeScreen(),
-      ),
-    );
-  }
-}
-```
-
-## 9. **.env Configuration**
-
-Buat file `.env` di root project:
-
-```env
-UPLOADTHING_SECRET=your_uploadthing_secret_key_here
-```
-
-## Fitur yang diimplementasikan:
-
-1. **Storage Hybrid**: File disimpan di lokal (SQLite + device storage) dan cloud (UploadThing)
-2. **Sync Otomatis**: File yang belum tersinkron akan diupload saat ada koneksi
-3. **Fallback System**: Jika file tidak ada di lokal, akan diambil dari cloud
-4. **Offline Support**: Bisa upload file saat offline, akan disimpan lokal dulu
-5. **Manajemen State**: Menggunakan Provider untuk state management
-6. **Multiple File Types**: Support berbagai jenis file
-
-## Catatan:
-
-1. Pastikan untuk mendapatkan API Key dari [UploadThing](https://uploadthing.com)
-2. Implementasi UploadThing API disesuaikan dengan dokumentasi resmi mereka
-3. Tambahkan permission untuk file access di Android/iOS
-4. Implementasi error handling yang lebih robust untuk production
-
-Sistem ini memberikan solusi hybrid yang kuat dengan kemampuan offline-first dan sync otomatis ke cloud ketika tersedia koneksi internet.Berikut adalah implementasi integrasi Cloud + Local Database (Hybrid Storage) di Flutter menggunakan UploadThing dan SQLite:
-
-## 1. **Setup Dependencies**
-
-Tambahkan ke `pubspec.yaml`:
-
-```yaml
-dependencies:
-  flutter:
-    sdk: flutter
-  uploadthing: ^1.0.0  # atau paket yang sesuai untuk UploadThing
-  sqflite: ^2.3.0
-  path: ^1.8.3
-  http: ^0.13.5
-  provider: ^6.0.5
-  file_picker: ^5.3.3
-  cached_network_image: ^3.3.0
-```
-
-## 2. **Model Data**
-
-```dart
-// lib/models/file_model.dart
-class HybridFile {
-  int? id;
-  String localPath;
-  String? cloudUrl;
-  String fileName;
-  DateTime uploadedAt;
-  bool isSynced;
-  FileType type;
-
-  HybridFile({
-    this.id,
-    required this.localPath,
-    this.cloudUrl,
-    required this.fileName,
-    required this.uploadedAt,
-    this.isSynced = false,
-    required this.type,
-  });
-
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'localPath': localPath,
-      'cloudUrl': cloudUrl,
-      'fileName': fileName,
-      'uploadedAt': uploadedAt.toIso8601String(),
-      'isSynced': isSynced ? 1 : 0,
-      'type': type.toString(),
-    };
-  }
-
-  factory HybridFile.fromMap(Map<String, dynamic> map) {
-    return HybridFile(
-      id: map['id'],
-      localPath: map['localPath'],
-      cloudUrl: map['cloudUrl'],
-      fileName: map['fileName'],
-      uploadedAt: DateTime.parse(map['uploadedAt']),
-      isSynced: map['isSynced'] == 1,
-      type: FileType.values.firstWhere(
-        (e) => e.toString() == map['type'],
-        orElse: () => FileType.other,
-      ),
-    );
-  }
-}
-
-enum FileType { image, video, document, pdf, other }
-```
-
-## 3. **Database Helper (SQLite)**
-
-```dart
-// lib/database/database_helper.dart
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
-import '../models/file_model.dart';
-
-class DatabaseHelper {
-  static final DatabaseHelper _instance = DatabaseHelper._internal();
-  factory DatabaseHelper() => _instance;
-  DatabaseHelper._internal();
-
-  static Database? _database;
-
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
-  }
-
-  Future<Database> _initDatabase() async {
-    String path = join(await getDatabasesPath(), 'hybrid_storage.db');
-    return await openDatabase(
-      path,
-      version: 1,
-      onCreate: _onCreate,
-    );
-  }
-
-  Future<void> _onCreate(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE files(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        localPath TEXT NOT NULL,
-        cloudUrl TEXT,
-        fileName TEXT NOT NULL,
-        uploadedAt TEXT NOT NULL,
-        isSynced INTEGER DEFAULT 0,
-        type TEXT NOT NULL
-      )
-    ''');
-  }
-
-  // CRUD Operations
-  Future<int> insertFile(HybridFile file) async {
-    Database db = await database;
-    return await db.insert('files', file.toMap());
-  }
-
-  Future<List<HybridFile>> getAllFiles() async {
-    Database db = await database;
-    final List<Map<String, dynamic>> maps = await db.query('files');
-    return List.generate(maps.length, (i) => HybridFile.fromMap(maps[i]));
-  }
-
-  Future<List<HybridFile>> getUnsyncedFiles() async {
-    Database db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'files',
-      where: 'isSynced = ?',
-      whereArgs: [0],
-    );
-    return List.generate(maps.length, (i) => HybridFile.fromMap(maps[i]));
-  }
-
-  Future<int> updateFile(HybridFile file) async {
-    Database db = await database;
-    return await db.update(
-      'files',
-      file.toMap(),
-      where: 'id = ?',
-      whereArgs: [file.id],
-    );
-  }
-
-  Future<int> deleteFile(int id) async {
-    Database db = await database;
-    return await db.delete(
-      'files',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-}
-```
-
-## 4. **UploadThing Service**
-
-```dart
-// lib/services/uploadthing_service.dart
-import 'dart:io';
-import 'package:http/http.dart' as http;
-import 'package:flutter_dotenv/flutter_dotenv.dart';
-import '../models/file_model.dart';
-
-class UploadThingService {
-  static final String? _apiKey = dotenv.env['UPLOADTHING_SECRET'];
-  static const String _apiUrl = 'https://uploadthing.com/api';
-
-  Future<String?> uploadFile(File file, String fileName) async {
-    try {
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$_apiUrl/upload'),
-      );
-
-      request.headers['Authorization'] = 'Bearer $_apiKey';
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          'file',
-          file.path,
-          filename: fileName,
-        ),
-      );
-
-      var response = await request.send();
-      
-      if (response.statusCode == 200) {
-        var responseData = await response.stream.bytesToString();
-        // Parse response to get URL
-        // Format response sesuai dengan API UploadThing
-        final jsonResponse = json.decode(responseData);
-        return jsonResponse['url'];
-      }
-      return null;
-    } catch (e) {
-      print('Upload error: $e');
-      return null;
-    }
-  }
-
-  Future<bool> deleteFile(String fileUrl) async {
-    try {
-      var response = await http.delete(
-        Uri.parse('$_apiUrl/deleteFile'),
-        headers: {
-          'Authorization': 'Bearer $_apiKey',
-          'Content-Type': 'application/json',
-        },
-        body: json.encode({'url': fileUrl}),
-      );
-      
-      return response.statusCode == 200;
-    } catch (e) {
-      print('Delete error: $e');
-      return false;
-    }
-  }
-}
-```
-
-## 5. **Hybrid Storage Manager**
-
-```dart
-// lib/services/hybrid_storage_manager.dart
-import 'dart:io';
-import 'package:file_picker/file_picker.dart';
-import '../database/database_helper.dart';
-import './uploadthing_service.dart';
-import '../models/file_model.dart';
-
-class HybridStorageManager {
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  final UploadThingService _uploadService = UploadThingService();
-
-  // Upload file dengan hybrid approach
-  Future<HybridFile?> uploadFile(PlatformFile platformFile) async {
-    try {
-      final file = File(platformFile.path!);
-      
-      // Simpan ke lokal database dulu
-      final hybridFile = HybridFile(
-        localPath: platformFile.path!,
-        fileName: platformFile.name,
-        uploadedAt: DateTime.now(),
-        type: _getFileType(platformFile.name),
-      );
-
-      // Insert ke database lokal
-      final id = await _dbHelper.insertFile(hybridFile);
-      hybridFile.id = id;
-
-      // Coba upload ke cloud (UploadThing)
-      final cloudUrl = await _uploadService.uploadFile(file, platformFile.name);
-      
-      if (cloudUrl != null) {
-        // Update database dengan cloud URL
-        hybridFile.cloudUrl = cloudUrl;
-        hybridFile.isSynced = true;
-        await _dbHelper.updateFile(hybridFile);
-      }
-
-      return hybridFile;
-    } catch (e) {
-      print('Upload failed: $e');
-      return null;
-    }
-  }
-
-  // Sync semua file yang belum tersinkron
-  Future<void> syncUnsyncedFiles() async {
-    final unsyncedFiles = await _dbHelper.getUnsyncedFiles();
-    
-    for (var file in unsyncedFiles) {
-      final localFile = File(file.localPath);
-      
-      if (await localFile.exists()) {
-        final cloudUrl = await _uploadService.uploadFile(
-          localFile, 
-          file.fileName
-        );
+    <application
+        android:label="Nama Aplikasi Anda"  <!-- Ganti -->
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/LaunchTheme">
         
-        if (cloudUrl != null) {
-          file.cloudUrl = cloudUrl;
-          file.isSynced = true;
-          await _dbHelper.updateFile(file);
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:hardwareAccelerated="true"
+            android:theme="@style/LaunchTheme"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+```
+
+### **Langkah 3: Build APK**
+
+6. **Clean project**:
+```bash
+flutter clean
+```
+
+7. **Build APK debug** (untuk testing):
+```bash
+flutter build apk --debug
+```
+Output: `build/app/outputs/flutter-apk/app-debug.apk`
+
+8. **Build APK release** (untuk publish):
+```bash
+flutter build apk --release
+```
+Output: `build/app/outputs/flutter-apk/app-release.apk`
+
+9. **Build APK split per ABI** (ukuran lebih kecil):
+```bash
+flutter build apk --release --split-per-abi
+```
+Output:
+- `app-armeabi-v7a-release.apk` (32-bit)
+- `app-arm64-v8a-release.apk` (64-bit)
+- `app-x86_64-release.apk` (x86)
+
+### **Langkah 4: Generate Key Store (Untuk signing APK)**
+
+10. **Buka terminal di folder android**:
+```bash
+cd android
+```
+
+11. **Generate keystore**:
+```bash
+keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+Isi informasi yang diminta:
+- Password: (simpan dengan aman!)
+- Nama: Nama Anda
+- Organizational Unit: Departemen
+- Organization: Perusahaan
+- City: Kota
+- State: Provinsi
+- Country: Kode negara (ID untuk Indonesia)
+
+12. **Edit `android/key.properties`** (buat file baru):
+```properties
+storePassword=password_anda
+keyPassword=password_anda
+keyAlias=upload
+storeFile=../upload-keystore.jks
+```
+
+13. **Edit `android/app/build.gradle`** tambahkan di bagian atas:
+```gradle
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    ...
+    signingConfigs {
+        release {
+            keyAlias keystoreProperties['keyAlias']
+            keyPassword keystoreProperties['keyPassword']
+            storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+            storePassword keystoreProperties['storePassword']
         }
-      }
     }
-  }
-
-  // Download file (gunakan cloud jika ada, fallback ke lokal)
-  Future<File?> getFile(HybridFile hybridFile) async {
-    try {
-      // Prioritas: file lokal
-      final localFile = File(hybridFile.localPath);
-      
-      if (await localFile.exists()) {
-        return localFile;
-      }
-      
-      // Jika tidak ada di lokal, download dari cloud
-      if (hybridFile.cloudUrl != null) {
-        // Implement download dari UploadThing
-        // ...
-      }
-      
-      return null;
-    } catch (e) {
-      print('Get file error: $e');
-      return null;
-    }
-  }
-
-  // Delete file dari kedua storage
-  Future<bool> deleteFile(HybridFile hybridFile) async {
-    try {
-      // Hapus dari cloud jika ada
-      if (hybridFile.cloudUrl != null) {
-        await _uploadService.deleteFile(hybridFile.cloudUrl!);
-      }
-      
-      // Hapus dari lokal storage
-      final localFile = File(hybridFile.localPath);
-      if (await localFile.exists()) {
-        await localFile.delete();
-      }
-      
-      // Hapus dari database
-      if (hybridFile.id != null) {
-        await _dbHelper.deleteFile(hybridFile.id!);
-      }
-      
-      return true;
-    } catch (e) {
-      print('Delete error: $e');
-      return false;
-    }
-  }
-
-  FileType _getFileType(String fileName) {
-    final ext = fileName.split('.').last.toLowerCase();
     
-    if (['jpg', 'jpeg', 'png', 'gif'].contains(ext)) {
-      return FileType.image;
-    } else if (['mp4', 'mov', 'avi'].contains(ext)) {
-      return FileType.video;
-    } else if (['pdf'].contains(ext)) {
-      return FileType.pdf;
-    } else if (['doc', 'docx', 'txt'].contains(ext)) {
-      return FileType.document;
-    } else {
-      return FileType.other;
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release  // Ganti dengan ini
+        }
+    }
+}
+```
+
+14. **Build APK dengan signing**:
+```bash
+flutter build apk --release
+```
+
+### **Langkah 5: Build App Bundle (AAB) untuk Google Play Store**
+
+15. **Build AAB**:
+```bash
+flutter build appbundle --release
+```
+Output: `build/app/outputs/bundle/release/app-release.aab`
+
+16. **Verifikasi AAB**:
+```bash
+bundletool build-apks --bundle=build/app/outputs/bundle/release/app-release.aab --output=app.apks
+```
+
+### **Langkah 6: Deploy ke Google Play Store**
+
+17. **Daftar di [Google Play Console](https://play.google.com/console)**
+18. **Bayar biaya pendaftaran** ($25 sekali)
+19. **Buat aplikasi baru**
+20. **Upload AAB file** (`app-release.aab`)
+21. **Isi metadata**:
+   - Deskripsi
+   - Screenshot
+   - Ikon aplikasi
+   - Kategori
+   - Konten rating
+22. **Setup pricing** (gratis/berbayar)
+23. **Submit untuk review** (2-7 hari)
+
+---
+
+## 🌐 **DEPLOY KE NETLIFY (Web Version)**
+
+### **Langkah 1: Persiapan Build Web**
+
+1. **Pastikan support web**:
+```bash
+flutter doctor
+```
+Pastikan ada: `Chrome - develop for the web`
+
+2. **Enable web support** (jika belum):
+```bash
+flutter config --enable-web
+```
+
+3. **Build untuk web**:
+```bash
+flutter build web --release
+```
+Output: `build/web/`
+
+### **Langkah 2: Optimasi Build Web**
+
+4. **Edit `web/index.html`** untuk SEO:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta content="width=device-width, initial-scale=1.0" name="viewport">
+    <meta name="description" content="Deskripsi aplikasi Anda">
+    <meta name="keywords" content="flutter, aplikasi, web">
+    <title>Nama Aplikasi Anda</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" href="icons/icon-192.png">
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="Nama Aplikasi">
+    <meta property="og:description" content="Deskripsi aplikasi">
+    <meta property="og:image" content="icons/icon-512.png">
+    <meta property="og:url" content="https://your-app.netlify.app">
+    
+    <!-- PWA -->
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    
+    <!-- Flutter resources -->
+    <script src="flutter.js" defer></script>
+</head>
+<body>
+    <script>
+        window.addEventListener('load', function(ev) {
+            // Download main.dart.js
+            _flutter.loader.loadEntrypoint({
+                serviceWorker: {
+                    serviceWorkerVersion: serviceWorkerVersion,
+                }
+            }).then(function(engineInitializer) {
+                return engineInitializer.initializeEngine();
+            }).then(function(appRunner) {
+                return appRunner.runApp();
+            });
+        });
+    </script>
+</body>
+</html>
+```
+
+5. **Edit `web/manifest.json`**:
+```json
+{
+  "name": "Nama Aplikasi",
+  "short_name": "AppShort",
+  "description": "Deskripsi aplikasi",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#2196F3",
+  "background_color": "#ffffff",
+  "icons": [
+    {
+      "src": "icons/icon-72x72.png",
+      "sizes": "72x72",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-96x96.png",
+      "sizes": "96x96",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-128x128.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-144x144.png",
+      "sizes": "144x144",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-152x152.png",
+      "sizes": "152x152",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-384x384.png",
+      "sizes": "384x384",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
+```
+
+### **Langkah 3: Konfigurasi Firebase untuk Web**
+
+6. **Tambahkan Firebase Web**:
+- Buka [Firebase Console](https://console.firebase.google.com/)
+- Pilih project
+- Klik ⚙️ > Project settings
+- Scroll ke "Your apps"
+- Klik `</>` untuk tambah web app
+- Register app (nama: "web")
+- Copy konfigurasi
+
+7. **Edit `web/index.html`** tambahkan sebelum `</body>`:
+```html
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js"></script>
+
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSy...",
+    authDomain: "your-app.firebaseapp.com",
+    projectId: "your-app",
+    storageBucket: "your-app.appspot.com",
+    messagingSenderId: "123456789",
+    appId: "1:123456789:web:abcdef"
+  };
+  
+  // Initialize Firebase
+  firebase.initializeApp(firebaseConfig);
+</script>
+```
+
+8. **Update Firebase Rules untuk web**:
+```javascript
+// Firestore Rules
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
+
+// Storage Rules
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if request.auth != null;
     }
   }
 }
 ```
 
-## 6. **Provider State Management**
+### **Langkah 4: Deploy ke Netlify**
 
-```dart
-// lib/providers/file_provider.dart
-import 'package:flutter/material.dart';
-import '../models/file_model.dart';
-import '../services/hybrid_storage_manager.dart';
+9. **Install Netlify CLI**:
+```bash
+npm install -g netlify-cli
+```
 
-class FileProvider with ChangeNotifier {
-  final HybridStorageManager _storageManager = HybridStorageManager();
-  List<HybridFile> _files = [];
-  bool _isLoading = false;
+10. **Login ke Netlify**:
+```bash
+netlify login
+```
+Akan terbuka browser untuk authorization.
 
-  List<HybridFile> get files => _files;
-  bool get isLoading => _isLoading;
+11. **Initialize Netlify di project**:
+```bash
+netlify init
+```
+Pilih:
+- Create & configure a new site
+- Team: Personal (atau pilih team)
+- Site name: (biarkan kosong untuk random)
 
-  Future<void> loadFiles() async {
-    _isLoading = true;
-    notifyListeners();
+12. **Deploy langsung**:
+```bash
+netlify deploy --prod --dir=build/web
+```
 
-    _files = await _storageManager._dbHelper.getAllFiles();
-    
-    _isLoading = false;
-    notifyListeners();
-  }
+13. **Atau deploy dengan drag & drop**:
+- Buka [app.netlify.com](https://app.netlify.com/)
+- Drag folder `build/web` ke area deploy
+- Tunggu proses selesai
 
-  Future<void> uploadFile(PlatformFile platformFile) async {
-    _isLoading = true;
-    notifyListeners();
+### **Langkah 5: Setup Custom Domain (Opsional)**
 
-    final file = await _storageManager.uploadFile(platformFile);
-    
-    if (file != null) {
-      _files.add(file);
-    }
+14. **Di dashboard Netlify**:
+- Site settings > Domain management
+- Add custom domain
+- Tambahkan domain Anda
+- Ikuti instruksi untuk setup DNS
 
-    _isLoading = false;
-    notifyListeners();
-  }
+15. **Setup SSL otomatis**:
+Netlify akan otomatis generate SSL certificate via Let's Encrypt.
 
-  Future<void> syncFiles() async {
-    _isLoading = true;
-    notifyListeners();
+### **Langkah 6: Continuous Deployment (CD)**
 
-    await _storageManager.syncUnsyncedFiles();
-    await loadFiles();
+16. **Connect dengan GitHub**:
+- Di Netlify: Deploys > Link to Git
+- Pilih repository
+- Configure build settings:
+  - Build command: `flutter build web --release`
+  - Publish directory: `build/web`
+  - Branch: `main`
 
-    _isLoading = false;
-    notifyListeners();
-  }
+17. **Setup environment variables** (jika ada):
+- Site settings > Environment variables
+- Tambahkan:
+  - FIREBASE_API_KEY
+  - FIREBASE_AUTH_DOMAIN
+  - dll
 
-  Future<void> deleteFile(HybridFile file) async {
-    await _storageManager.deleteFile(file);
-    _files.remove(file);
-    notifyListeners();
+### **Langkah 7: Optimasi Performance Web**
+
+18. **Edit `flutter.js` untuk caching**:
+```javascript
+// web/flutter.js
+{
+  serviceWorker: {
+    serviceWorkerVersion: serviceWorkerVersion,
+    timeoutMillis: 4000,
   }
 }
 ```
 
-## 7. **UI Implementation**
+19. **Add `_headers` file di `web/`**:
+```
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  X-XSS-Protection: 1; mode=block
+  Referrer-Policy: no-referrer-when-downgrade
+  
+  # Cache static assets
+  /assets/*
+    Cache-Control: public, max-age=31536000, immutable
+  
+  /icons/*
+    Cache-Control: public, max-age=31536000, immutable
+  
+  /version.json
+    Cache-Control: no-cache
+```
 
-```dart
-// lib/screens/home_screen.dart
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:file_picker/file_picker.dart';
-import '../providers/file_provider.dart';
+20. **Add `_redirects` file di `web/`**:
+```
+/*    /index.html   200
+```
 
-class HomeScreen extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Hybrid Storage'),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.sync),
-            onPressed: () => context.read<FileProvider>().syncFiles(),
-          ),
-        ],
-      ),
-      body: Consumer<FileProvider>(
-        builder: (context, provider, child) {
-          if (provider.isLoading) {
-            return Center(child: CircularProgressIndicator());
+---
+
+## 📊 **TABEL PERBANDINGAN DEPLOYMENT**
+
+| **Aspek** | **APK (Android)** | **Netlify (Web)** |
+|-----------|-------------------|-------------------|
+| **Target Platform** | Android devices | Semua browser |
+| **Build Command** | `flutter build apk` | `flutter build web` |
+| **Output File** | `.apk` atau `.aab` | Folder `build/web/` |
+| **Distribution** | Play Store/Manual | URL publik |
+| **Update Method** | Upload baru ke Play Store | Auto-deploy via Git |
+| **Review Process** | 2-7 hari (Google) | Instant |
+| **Cost** | $25 sekali | Free tier available |
+| **Analytics** | Play Console | Netlify Analytics |
+| **Testing** | Internal/Alpha/Beta | Preview deploy |
+| **Size Limit** | 150MB (Play Store) | 100GB bandwidth (free) |
+
+---
+
+## 🚀 **SCRIPT AUTOMASI (VS Code)**
+
+### **1. `deploy_scripts.sh`**
+```bash
+#!/bin/bash
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}Flutter Deployment Script${NC}"
+echo "=============================="
+
+# Function to build APK
+build_apk() {
+    echo -e "${YELLOW}Building APK...${NC}"
+    flutter clean
+    flutter pub get
+    flutter build apk --release
+    echo -e "${GREEN}APK built at: build/app/outputs/flutter-apk/app-release.apk${NC}"
+}
+
+# Function to build App Bundle
+build_aab() {
+    echo -e "${YELLOW}Building App Bundle...${NC}"
+    flutter clean
+    flutter pub get
+    flutter build appbundle --release
+    echo -e "${GREEN}AAB built at: build/app/outputs/bundle/release/app-release.aab${NC}"
+}
+
+# Function to build Web
+build_web() {
+    echo -e "${YELLOW}Building for Web...${NC}"
+    flutter clean
+    flutter pub get
+    flutter build web --release
+    echo -e "${GREEN}Web built at: build/web/${NC}"
+}
+
+# Function to deploy to Netlify
+deploy_netlify() {
+    echo -e "${YELLOW}Deploying to Netlify...${NC}"
+    build_web
+    netlify deploy --prod --dir=build/web
+}
+
+# Menu
+echo "Select deployment option:"
+echo "1. Build APK"
+echo "2. Build App Bundle (AAB)"
+echo "3. Build Web"
+echo "4. Deploy to Netlify"
+echo "5. All (APK + AAB + Web)"
+echo -n "Enter choice [1-5]: "
+read choice
+
+case $choice in
+    1) build_apk ;;
+    2) build_aab ;;
+    3) build_web ;;
+    4) deploy_netlify ;;
+    5) 
+        build_apk
+        build_aab
+        build_web
+        ;;
+    *) echo -e "${RED}Invalid option${NC}" ;;
+esac
+```
+
+### **2. `package.json` untuk automation**
+```json
+{
+  "name": "flutter-deploy",
+  "version": "1.0.0",
+  "scripts": {
+    "clean": "flutter clean",
+    "get": "flutter pub get",
+    "analyze": "flutter analyze",
+    "test": "flutter test",
+    "build:apk": "flutter build apk --release",
+    "build:aab": "flutter build appbundle --release",
+    "build:web": "flutter build web --release",
+    "deploy:netlify": "netlify deploy --prod --dir=build/web",
+    "deploy:all": "npm run build:apk && npm run build:aab && npm run build:web"
+  }
+}
+```
+
+### **3. VS Code Tasks (`.vscode/tasks.json`)**
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build APK Release",
+      "type": "shell",
+      "command": "flutter",
+      "args": ["build", "apk", "--release"],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build Web Release",
+      "type": "shell",
+      "command": "flutter",
+      "args": ["build", "web", "--release"],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Deploy to Netlify",
+      "type": "shell",
+      "command": "netlify",
+      "args": ["deploy", "--prod", "--dir=build/web"],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "dependsOn": ["Build Web Release"],
+      "problemMatcher": []
+    }
+  ]
+}
+```
+
+---
+
+## 🔧 **TROUBLESHOOTING UMUM**
+
+### **Masalah Build APK:**
+```bash
+# Error: minSdk version
+# Edit android/app/build.gradle
+minSdk 21  # Pastikan minimal 21
+
+# Error: MultiDex
+# Edit android/app/build.gradle
+dependencies {
+    implementation 'androidx.multidex:multidex:2.0.1'
+}
+```
+
+### **Masalah Build Web:**
+```bash
+# Error: CORS Firebase
+# Tambahkan di firebase.json
+{
+  "hosting": {
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Access-Control-Allow-Origin",
+            "value": "*"
           }
-
-          return ListView.builder(
-            itemCount: provider.files.length,
-            itemBuilder: (context, index) {
-              final file = provider.files[index];
-              return ListTile(
-                leading: _buildFileIcon(file.type),
-                title: Text(file.fileName),
-                subtitle: Text(
-                  file.isSynced ? 'Synced ✓' : 'Local only',
-                  style: TextStyle(
-                    color: file.isSynced ? Colors.green : Colors.orange,
-                  ),
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (file.cloudUrl != null)
-                      IconButton(
-                        icon: Icon(Icons.cloud_download),
-                        onPressed: () {
-                          // Download dari cloud
-                        },
-                      ),
-                    IconButton(
-                      icon: Icon(Icons.delete, color: Colors.red),
-                      onPressed: () => provider.deleteFile(file),
-                    ),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _pickAndUploadFile(context),
-        child: Icon(Icons.upload),
-      ),
-    );
-  }
-
-  Widget _buildFileIcon(FileType type) {
-    switch (type) {
-      case FileType.image:
-        return Icon(Icons.image, color: Colors.blue);
-      case FileType.video:
-        return Icon(Icons.video_library, color: Colors.red);
-      case FileType.pdf:
-        return Icon(Icons.picture_as_pdf, color: Colors.red);
-      case FileType.document:
-        return Icon(Icons.description, color: Colors.green);
-      default:
-        return Icon(Icons.insert_drive_file);
-    }
-  }
-
-  Future<void> _pickAndUploadFile(BuildContext context) async {
-    final result = await FilePicker.platform.pickFiles();
-    
-    if (result != null && result.files.isNotEmpty) {
-      await context.read<FileProvider>().uploadFile(result.files.first);
-    }
+        ]
+      }
+    ]
   }
 }
+
+# Error: Blank screen
+flutter clean
+flutter pub get
+flutter build web --release --web-renderer canvaskit
 ```
 
-## 8. **Main App**
+### **Masalah Netlify:**
+```bash
+# Build fail: File too large
+# Add netlify.toml
+[build]
+  publish = "build/web"
+  command = "flutter build web --release"
 
-```dart
-// lib/main.dart
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import './providers/file_provider.dart';
-import './screens/home_screen.dart';
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(MyApp());
-}
-
-class MyApp extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => FileProvider()..loadFiles(),
-      child: MaterialApp(
-        title: 'Hybrid Storage App',
-        theme: ThemeData(
-          primarySwatch: Colors.blue,
-        ),
-        home: HomeScreen(),
-      ),
-    );
-  }
-}
+# Enable large media
+[build.environment]
+  FLUTTER_WEB = "true"
 ```
 
-## 9. **.env Configuration**
+---
 
-Buat file `.env` di root project:
+## 📈 **MONITORING SETELAH DEPLOY**
 
-```env
-UPLOADTHING_SECRET=your_uploadthing_secret_key_here
+### **Untuk APK:**
+1. **Google Play Console**:
+   - Statistics > Installs
+   - Quality > Crashes & ANRs
+   - Reviews > User feedback
+
+2. **Firebase Crashlytics** (tambahkan di pubspec.yaml):
+```yaml
+firebase_crashlytics: ^3.0.24
 ```
 
-## Fitur yang diimplementasikan:
+### **Untuk Netlify:**
+1. **Netlify Analytics**:
+   - Unique visitors
+   - Bandwidth usage
+   - Deploy history
 
-1. **Storage Hybrid**: File disimpan di lokal (SQLite + device storage) dan cloud (UploadThing)
-2. **Sync Otomatis**: File yang belum tersinkron akan diupload saat ada koneksi
-3. **Fallback System**: Jika file tidak ada di lokal, akan diambil dari cloud
-4. **Offline Support**: Bisa upload file saat offline, akan disimpan lokal dulu
-5. **Manajemen State**: Menggunakan Provider untuk state management
-6. **Multiple File Types**: Support berbagai jenis file
+2. **Google Analytics** (tambahkan di web/index.html):
+```html
+<script async src="https://www.googletagmanager.com/gtag/js?id=GA_MEASUREMENT_ID"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'GA_MEASUREMENT_ID');
+</script>
+```
+- [ ] robots.txt
 
-## Catatan:
-
-1. Pastikan untuk mendapatkan API Key dari [UploadThing](https://uploadthing.com)
-2. Implementasi UploadThing API disesuaikan dengan dokumentasi resmi mereka
-3. Tambahkan permission untuk file access di Android/iOS
-4. Implementasi error handling yang lebih robust untuk production
+Dengan panduan ini, Anda bisa deploy aplikasi Flutter ke Android sebagai APK dan ke web via Netlify langsung dari VS Code. Selamat mencoba! 🚀
